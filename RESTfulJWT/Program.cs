@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
@@ -49,7 +50,7 @@ public class UserService
         {
             new User { Username = "user1", Password = "password1" },
             new User { Username = "user2", Password = "password2" }
-        };
+        };   
     }
 
     public User GetUserByUsername(string username)
@@ -62,9 +63,9 @@ public class UserService
 
 public class JwtHandler
 {
-    private readonly string _secretKey;
+    private readonly byte[] _secretKey;
 
-    public JwtHandler(string secretKey)
+    public JwtHandler(byte[] secretKey)
     {
         _secretKey = secretKey;
     }
@@ -72,28 +73,35 @@ public class JwtHandler
     public string GenerateToken(string username)
     {
         var tokenHandler = new JwtSecurityTokenHandler();
-        var key = Encoding.ASCII.GetBytes(_secretKey);
 
-        var tokenDescriptor = new SecurityTokenDescriptor
+        try
         {
-            Subject = new ClaimsIdentity(new[] { new Claim(ClaimTypes.Name, username) }),
-            Expires = DateTime.UtcNow.AddHours(1),
-            SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
-        };
+            var tokenDescriptor = new SecurityTokenDescriptor
+            {
+                Subject = new ClaimsIdentity(new[] { new Claim(ClaimTypes.Name, username) }),
+                Expires = DateTime.UtcNow.AddHours(1),
+                NotBefore = DateTime.UtcNow,
+                SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(_secretKey), SecurityAlgorithms.HmacSha256)
+            };
 
-        var token = tokenHandler.CreateToken(tokenDescriptor);
-        return tokenHandler.WriteToken(token);
+            var token = tokenHandler.CreateToken(tokenDescriptor);
+            return tokenHandler.WriteToken(token);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error generating token: {ex.Message}");
+            throw;
+        }
     }
 
     public ClaimsPrincipal ValidateToken(string token)
     {
         var tokenHandler = new JwtSecurityTokenHandler();
-        var key = Encoding.ASCII.GetBytes(_secretKey);
 
         var validationParameters = new TokenValidationParameters
         {
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(key),
+            IssuerSigningKey = new SymmetricSecurityKey(_secretKey),
             ValidateIssuer = false,
             ValidateAudience = false,
             ValidateLifetime = true,
@@ -109,6 +117,8 @@ public class JwtHandler
             return null;
         }
     }
+
+
 }
 
 [ApiController]
@@ -139,13 +149,22 @@ public class AuthenticationController : ControllerBase
 
     [HttpPost("login")]
     public IActionResult Login([FromBody] User user)
-    {
+{
         var authenticatedUser = _userService.GetUserByUsername(user.Username);
 
         if (authenticatedUser == null || authenticatedUser.Password != user.Password)
         {
             return Unauthorized();
         }
+
+        var key = Encoding.ASCII.GetBytes("your-secret-key"); // Replace with your actual secret key
+
+        var tokenDescriptor = new SecurityTokenDescriptor
+        {
+            Subject = new ClaimsIdentity(new[] { new Claim(ClaimTypes.Name, authenticatedUser.Username) }),
+            Expires = DateTime.UtcNow.AddHours(1), // Token expiration time
+            SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
+        };
 
         var token = _jwtHandler.GenerateToken(authenticatedUser.Username);
 
@@ -160,8 +179,19 @@ public class Startup
         services.AddAuthentication();
 
         services.AddControllers();
-        services.AddSingleton<UserService>();
-        services.AddSingleton(new JwtHandler("your-secret-key"));
+        services.AddSingleton<UserService>(); 
+        var secretKey = GenerateRandomKey(32); // 32 bytes for a 256-bit key
+        services.AddSingleton(new JwtHandler(secretKey));
+    }
+
+    private byte[] GenerateRandomKey(int length)
+    {
+        var key = new byte[length];
+        using (var rng = RandomNumberGenerator.Create())
+        {
+            rng.GetBytes(key);
+        }
+        return key;
     }
 
     public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
